@@ -1,0 +1,137 @@
+from components.base import BaseComponent, EdgeDetector, EdgeType, EventSensorHandle
+from asyncua import Node, Server, ua
+from typing import List, Optional, Tuple
+from enum import Enum, auto
+
+import pydantic
+import asyncio
+
+
+class BoxType(Enum):
+    GREEN = auto()
+    BLUE = auto()
+    EMPTY = auto()
+
+
+class BoxProducer(BaseComponent):
+    def __init__(self, box_type: BoxType, server: Server, namespace_index: int, base_node: Node, num_emitters: int, num_conveyors: int, queue: asyncio.Queue[Tuple[BoxType, callable]]):
+        super().__init__(box_type.name, server, namespace_index, base_node)
+
+        # enfileira caixas para o segundo estagio, passando o tipo e um metodo para avançar a ultima esteira
+        self.box_type = box_type
+        self.queue = queue  
+        self.num_emitters = num_emitters
+        self.num_conveyors = num_conveyors
+
+        self.emitters = []
+        self.conveyors = []
+        self.sensors = []
+
+
+    async def run(self):
+        producer_container = producer_product = None
+        if self.num_emitters > 1:
+            producer_container, producer_product = self.emitters
+
+        else:
+            producer_container = self.emitters[0]
+
+        start_converyor: List[Node] = self.conveyors[0:2]
+        end_conveyors: List[Optional[Node]] = None
+        if self.num_conveyors > 2:
+            end_conveyors = self.conveyors[2:]
+
+        start_sensor, end_sensor = self.sensors
+
+        ev_start_sensor = asyncio.Event()
+        ev_end_sensor = asyncio.Event()
+
+        # monitora as mudanças nos sensores
+        edge_detectors = [
+            EdgeDetector(start_sensor.nodeid, ev_start_sensor, EdgeType.FALLING),
+            EdgeDetector(end_sensor.nodeid, ev_end_sensor, EdgeType.RISING)
+        ]
+
+        handler = EventSensorHandle(self.server, edge_detectors)
+
+        sub = await self.server.create_subscription(10, handler)
+        await sub.subscribe_data_change([start_sensor, end_sensor])
+        await self.start_event.wait()
+
+        print(f'start producer task: for process: {self.box_type.name}')
+        
+        while True:
+            # ja começa ligando a upper e down, desliga o evento do sensor de start
+            edge_detectors[0].set_enable(False)
+            await producer_container.set_value(True)
+            await asyncio.sleep(1)
+
+            if producer_product:
+                await producer_product.set_value(True)
+            
+            # espera 5 segundo para encher, apos, liga a esteira 1 e 2, e desliga os 2 producer
+            await asyncio.sleep(5)
+            edge_detectors[0].set_enable(True)      # habilita o evento do sensor 1, borda de descida
+
+            if producer_product:
+                await producer_product.set_value(False)
+
+            await asyncio.sleep(1)
+
+            # liga a esteira 1 e 2
+            for conveyor in start_converyor:
+                await conveyor.set_value(True)
+            
+            # espera sensor de start, dar a transição
+            # quer dizer que a caixa moveu para a esteira 2
+            await ev_start_sensor.wait()
+            ev_start_sensor.clear()
+
+            # desliga a esteira 1
+            await start_converyor[0].set_value(False)
+            
+            # liga as esteiras 3 e 4
+            if end_conveyors:
+                for conveyor in end_conveyors:
+                    await conveyor.set_value(True)
+
+            # espera chegar no final, desliga todas
+            await ev_end_sensor.wait()
+            ev_end_sensor.clear()
+
+            for conveyor in self.conveyors:
+                if conveyor is not None:
+                    await conveyor.set_value(False)
+
+            # configura o evento do sensor de stop, para ser de borda de descida
+            # e depois continua o ciclo novamente
+            edge_detectors[1].set_trigger(EdgeType.FALLING)
+            await ev_end_sensor.wait()
+            print('reiniciando ciclo')
+            self.queue.put_nowait((self.box_type, self.move_to_next))
+            # manda uma caixa para a fila do turntable
+
+    async def move_to_next(self, value: bool):
+        pass
+
+    async def build(self):
+        # gera os emitters
+        names = [f'IO:Container {self.name}', f'IO:Product {self.name}']
+        for i in range(0, self.num_emitters):
+            node = await self.base_node.add_variable(self.namespace_index, names[i], False, varianttype=ua.VariantType.Boolean)
+            await node.set_writable(True)
+            self.emitters.append(node)
+
+        # gera as esteiras
+        names = f'IO:Conveyor {self.name}:'
+        for i in range(0, self.num_conveyors):
+            node = await self.base_node.add_variable(self.namespace_index, names + f'{i + 1}', False, varianttype=ua.VariantType.Boolean)
+            await node.set_writable(True)
+            self.conveyors.append(node)
+
+        # gera os sensores
+        names = [f'IO:Sensor Start {self.name}', f'IO:Sensor End {self.name}']
+        for i in range(0, 2):
+            node = await self.base_node.add_variable(self.namespace_index, names[i], False, varianttype=ua.VariantType.Boolean)
+            await node.set_writable(True)
+            self.sensors.append(node)
