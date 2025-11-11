@@ -1,15 +1,15 @@
 from typing import List
 from pathlib import Path
-from asyncua import Server, ua, Node
-from asyncua.ua import NodeId
+from asyncua import Server, ua
 from asyncua.server.user_managers import CertificateUserManager
 from asyncua.crypto.cert_gen import setup_self_signed_certificate
 from asyncua.crypto.validator import CertificateValidator, CertificateValidatorOptions
 from cryptography.x509.oid import ExtendedKeyUsageOID
 from components.base import BaseComponent
-from components.box_producer import BoxProducer, BoxType
+from components.box_producer import BoxFeeder, BoxType
 from components.turn_table import TurnTable
 from components.conveyor import Conveyor
+from components.handler import Handler
 
 import asyncio
 import socket
@@ -61,37 +61,40 @@ async def main():
     objects_node = server.get_objects_node()
     green_producer = await objects_node.add_object(idx, 'Green Producer')
     blue_producer = await objects_node.add_object(idx, 'Blue Producer')
-    empty_producer = await objects_node.add_object(idx, 'Empty Producer')
+    metal_producer = await objects_node.add_object(idx, 'Metal Producer')
     node_turns_table = await objects_node.add_object(idx, 'TurnsTable')
     node_input_conveyors = await objects_node.add_object(idx, 'Conveyors')
+    node_handler = await objects_node.add_object(idx, 'Handler')
 
     tasks: List[asyncio.Task] = []
     queue_producer_turntable = asyncio.Queue()
     
     producers: List[BaseComponent] = [
-        BoxProducer(BoxType.GREEN, server, idx, green_producer, 2, 4, queue_producer_turntable),
-        BoxProducer(BoxType.BLUE, server, idx, blue_producer, 2, 2, queue_producer_turntable),
-        BoxProducer(BoxType.EMPTY, server, idx, empty_producer, 1, 4, queue_producer_turntable)
+        BoxFeeder(BoxType.GREEN, server, idx, green_producer, 2, 4, queue_producer_turntable),
+        BoxFeeder(BoxType.BLUE, server, idx, blue_producer, 2, 2, queue_producer_turntable),
+        BoxFeeder(BoxType.EMPTY, server, idx, metal_producer, 2, 4, queue_producer_turntable)
     ]
 
-    for producer in producers:
+    for i, producer in enumerate(producers):
         await producer.build()
         task = asyncio.create_task(producer.run(), name=producer.name)
         tasks.append(task)
 
     turns_table: List[BaseComponent] = [
         TurnTable('Select', server, idx, node_turns_table, {}, queue_producer_turntable),
-        TurnTable('NoCover', server, idx, node_turns_table, {}, queue_producer_turntable),
-        TurnTable('WithCover', server, idx, node_turns_table, {}, queue_producer_turntable)
+        TurnTable('NoCover', server, idx, node_turns_table, {}, asyncio.Queue()),
+        TurnTable('WithCover', server, idx, node_turns_table, {}, asyncio.Queue())
     ]
 
-    for turn_table in turns_table:
+    for i, turn_table in enumerate(turns_table):
         base_node = await node_turns_table.add_object(idx, f'TurnTable {turn_table.name}')
         turn_table.base_node = base_node
 
         await turn_table.build()
-        task = asyncio.create_task(turn_table.run(), name=turn_table.name)
-        tasks.append(task)
+
+        if i == 0:
+            task = asyncio.create_task(turn_table.run(), name=turn_table.name)
+            tasks.append(task)
 
     conveyors: List[BaseComponent] = [
         Conveyor('InputConveyor', server, idx, node_input_conveyors, 2),
@@ -111,6 +114,12 @@ async def main():
         task = asyncio.create_task(conveyor.run(), name=conveyor.name)
         tasks.append(task)
 
+    handler = Handler('Handler', server, idx, node_handler)
+    await handler.build()
+
+    task = asyncio.create_task(handler.run(), name=handler.name)
+    tasks.append(task)
+
     btn_start_process = await objects_node.add_variable(idx, 'IO:Botao Start Process', False, varianttype=ua.VariantType.Boolean)
     await btn_start_process.set_writable()
 
@@ -118,6 +127,7 @@ async def main():
     await btn_stop_process.set_writable()
 
     await server.start()
+    print('server start')
     
     # melhorar esse pedaço
     process_run = False
@@ -128,6 +138,8 @@ async def main():
         value_stop_button: bool = await btn_stop_process.read_value()
 
         if value_start_button and process_run is False:
+            print('iniciando processo')
+
             process_run = True
             for producer in producers:
                 producer.start_event.set()
@@ -144,9 +156,26 @@ async def main():
             continue
 
         if value_stop_button and process_run is True:
-            # pausa o processo
+            print('parando processo')
+            
             process_run = False
-            producer_green_task.cancel()
+            for task in tasks:
+                task.cancel()
+
+            tasks.clear()
+
+            for producer in producers:
+                task = asyncio.create_task(producer.run(), name=producer.name)
+                tasks.append(task)
+
+            for turn_table in turns_table:
+                task = asyncio.create_task(turn_table.run(), name=turn_table.name)
+                tasks.append(task)
+
+            for conveyor in conveyors:
+                task = asyncio.create_task(conveyor.run(), name=conveyor.name)
+                tasks.append(task)
+
             continue
         
         await asyncio.sleep(0.01)

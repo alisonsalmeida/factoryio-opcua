@@ -3,7 +3,6 @@ from asyncua import Node, Server, ua
 from typing import List, Optional, Tuple
 from enum import Enum, auto
 
-import pydantic
 import asyncio
 
 
@@ -13,7 +12,7 @@ class BoxType(Enum):
     EMPTY = auto()
 
 
-class BoxProducer(BaseComponent):
+class BoxFeeder(BaseComponent):
     def __init__(self, box_type: BoxType, server: Server, namespace_index: int, base_node: Node, num_emitters: int, num_conveyors: int, queue: asyncio.Queue[Tuple[BoxType, callable]]):
         super().__init__(box_type.name, server, namespace_index, base_node)
 
@@ -27,6 +26,11 @@ class BoxProducer(BaseComponent):
         self.conveyors = []
         self.sensors = []
 
+    async def enche_container(self, node_producer: Node):
+        # await asyncio.sleep(1)
+        await node_producer.set_value(True)
+        await asyncio.sleep(5)
+        await node_producer.set_value(False)
 
     async def run(self):
         producer_container = producer_product = None
@@ -59,6 +63,7 @@ class BoxProducer(BaseComponent):
         await self.start_event.wait()
 
         print(f'start producer task: for process: {self.box_type.name}')
+        is_full = False
         
         while True:
             # ja começa ligando a upper e down, desliga o evento do sensor de start
@@ -66,11 +71,13 @@ class BoxProducer(BaseComponent):
             await producer_container.set_value(True)
             await asyncio.sleep(1)
 
-            if producer_product:
-                await producer_product.set_value(True)
-            
-            # espera 5 segundo para encher, apos, liga a esteira 1 e 2, e desliga os 2 producer
-            await asyncio.sleep(5)
+            if is_full is False:
+                if producer_product:
+                    await producer_product.set_value(True)
+                
+                # espera 5 segundo para encher, apos, liga a esteira 1 e 2, e desliga os 2 producer
+                await asyncio.sleep(5)
+
             edge_detectors[0].set_enable(True)      # habilita o evento do sensor 1, borda de descida
 
             if producer_product:
@@ -78,17 +85,20 @@ class BoxProducer(BaseComponent):
 
             await asyncio.sleep(1)
 
-            # liga a esteira 1 e 2
             for conveyor in start_converyor:
                 await conveyor.set_value(True)
-            
+                    
             # espera sensor de start, dar a transição
             # quer dizer que a caixa moveu para a esteira 2
             await ev_start_sensor.wait()
             ev_start_sensor.clear()
 
-            # desliga a esteira 1
+            # desliga a esteira 1 e ja enche o proximo
             await start_converyor[0].set_value(False)
+
+            if producer_product:
+                is_full = True
+                asyncio.create_task(self.enche_container(producer_product))
             
             # liga as esteiras 3 e 4
             if end_conveyors:
@@ -99,20 +109,27 @@ class BoxProducer(BaseComponent):
             await ev_end_sensor.wait()
             ev_end_sensor.clear()
 
-            for conveyor in self.conveyors:
-                if conveyor is not None:
-                    await conveyor.set_value(False)
+            if not end_conveyors:                
+                await start_converyor[1].set_value(False)
+
+            else:
+                for conveyor in self.conveyors:
+                    if conveyor is not None:
+                        await conveyor.set_value(False)
 
             # configura o evento do sensor de stop, para ser de borda de descida
             # e depois continua o ciclo novamente
+            # manda uma caixa para a fila do turntable
+            await self.queue.put((self.box_type, self.move_to_next))
+
+            # # espera o turn table puxar
             edge_detectors[1].set_trigger(EdgeType.FALLING)
             await ev_end_sensor.wait()
-            print('reiniciando ciclo')
-            self.queue.put_nowait((self.box_type, self.move_to_next))
-            # manda uma caixa para a fila do turntable
 
-    async def move_to_next(self, value: bool):
-        pass
+            ev_end_sensor.clear()
+            edge_detectors[1].set_trigger(EdgeType.RISING)
+
+            print(f'reiniciando ciclo em: {self.box_type}')
 
     async def build(self):
         # gera os emitters
@@ -135,3 +152,8 @@ class BoxProducer(BaseComponent):
             node = await self.base_node.add_variable(self.namespace_index, names[i], False, varianttype=ua.VariantType.Boolean)
             await node.set_writable(True)
             self.sensors.append(node)
+
+    async def move_to_next(self, value: bool):
+        # liga ou desliga a ultima esteira desse estagio, permite que o turntable mova para frente
+        print(f'---> CALL FROM TURN TABLE: {self.box_type}, {value}, {type(self)}')
+        await self.conveyors[self.num_conveyors - 1].set_value(value)

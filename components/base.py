@@ -41,7 +41,7 @@ class State(Enum):
 
 
 class EdgeDetector:
-    def __init__(self, node_id: NodeId, event: asyncio.Event, trigger_on=EdgeType.RISING):
+    def __init__(self, node_id: NodeId, event: asyncio.Event, trigger_on=EdgeType.RISING, enable=True):
         """
         :param trigger_on: EdgeType.RISING, EdgeType.FALLING ou EdgeType.BOTH
         :param callback: função chamada quando o trigger ocorre
@@ -51,9 +51,9 @@ class EdgeDetector:
         self.state = State.LOW
         self.trigger_on = trigger_on
         self.event_trigger = event
-        self.enable = True
+        self.enable = enable
     
-    def update(self, signal_value: int):
+    def update(self, signal_value: int, name: str):
         """Atualiza o estado com o novo valor do sensor (0 ou 1)."""
         if self.enable is False:
             return
@@ -74,7 +74,7 @@ class EdgeDetector:
         # Verifica se deve acionar callback
         if edge:
             if self.trigger_on == EdgeType.BOTH or self.trigger_on == edge:
-                print(f'Trigger Event: {self.trigger_on} for node_id: {self.node_id}')
+                print(f'Trigger Event: {self.trigger_on} for node_id: {name}')
                 self.event_trigger.set()
     
     def set_trigger(self, trigger_on: EdgeType):
@@ -96,7 +96,10 @@ class EventSensorHandle:
 
        for edge_detector in self.edge_detectors:
            if node.nodeid == edge_detector.node_id:
-               edge_detector.update(value)
+               edge_detector.update(value, name)
 
     async def event_notification(self, event):
         pass
+
+    async def add_detect(self, edge_detector: EdgeDetector):
+        self.edge_detectors.append(edge_detector)
