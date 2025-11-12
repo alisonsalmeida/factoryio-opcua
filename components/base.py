@@ -13,6 +13,7 @@ class BaseComponent:
         self.namespace_index = namespace_index
         self.base_node = base_node
         self.start_event = asyncio.Event()
+        self.nodes = []
     
     @abstractmethod
     async def run(self):

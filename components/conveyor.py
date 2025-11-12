@@ -21,6 +21,7 @@ class Conveyor(BaseComponent):
             await node.set_writable(True)
 
             self.engines.append(node)
+            self.nodes.append(node)
 
         # gera os sensores
         names = [f'IO:Sensor Start {self.name}', f'IO:Sensor End {self.name}']

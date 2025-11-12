@@ -41,12 +41,16 @@ class Handler(BaseComponent):
         # movimento
         self.handler_raise = await self.base_node.add_variable(idx, f'IO:Move Raise {self.name}', False, varianttype=ua.VariantType.Boolean)
         await self.handler_raise.set_writable(True)
+        self.nodes.append(self.handler_raise)
 
         self.handler_move_leff = await self.base_node.add_variable(idx, f'IO:Mode Left {self.name}', False, varianttype=ua.VariantType.Boolean)
         await self.handler_move_leff.set_writable(True)
+        self.nodes.append(self.handler_move_leff)
 
         self.handler_move_right = await self.base_node.add_variable(idx, f'IO:Mode Right {self.name}', False, varianttype=ua.VariantType.Boolean)
         await self.handler_move_right.set_writable(True)
+        self.nodes.append(self.handler_move_right)
 
         self.position = await self.base_node.add_variable(idx, f'IO:Position {self.name}', 21474, varianttype=ua.VariantType.Int16)
         await self.position.set_writable(True)
+        self.nodes.append(self.position)

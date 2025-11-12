@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Tuple
 from pathlib import Path
 from asyncua import Server, ua
 from asyncua.server.user_managers import CertificateUserManager
@@ -10,6 +10,7 @@ from components.box_producer import BoxFeeder, BoxType
 from components.turn_table import TurnTable
 from components.conveyor import Conveyor
 from components.handler import Handler
+from components.order import Order
 
 import asyncio
 import socket
@@ -67,12 +68,15 @@ async def main():
     node_handler = await objects_node.add_object(idx, 'Handler')
 
     tasks: List[asyncio.Task] = []
-    queue_producer_turntable = asyncio.Queue()
+    queue_producer_turntable: asyncio.Queue[Tuple[Order, callable]] = asyncio.Queue() # feeder -> turntable
+    queue_oder_green: asyncio.Queue[Order] = asyncio.Queue()
+    queue_oder_blue: asyncio.Queue[Order] = asyncio.Queue()
+    queue_oder_metal: asyncio.Queue[Order] = asyncio.Queue()
     
     producers: List[BaseComponent] = [
-        BoxFeeder(BoxType.GREEN, server, idx, green_producer, 2, 4, queue_producer_turntable),
-        BoxFeeder(BoxType.BLUE, server, idx, blue_producer, 2, 2, queue_producer_turntable),
-        BoxFeeder(BoxType.EMPTY, server, idx, metal_producer, 2, 4, queue_producer_turntable)
+        BoxFeeder(queue_oder_green, BoxType.GREEN, server, idx, green_producer, 2, 4, queue_producer_turntable),
+        BoxFeeder(queue_oder_blue, BoxType.BLUE, server, idx, blue_producer, 2, 2, queue_producer_turntable),
+        BoxFeeder(queue_oder_metal, BoxType.METAL, server, idx, metal_producer, 2, 4, queue_producer_turntable)
     ]
 
     for i, producer in enumerate(producers):
@@ -165,14 +169,23 @@ async def main():
             tasks.clear()
 
             for producer in producers:
+                for node in producer.nodes:
+                    await node.set_value(False)
+
                 task = asyncio.create_task(producer.run(), name=producer.name)
                 tasks.append(task)
 
             for turn_table in turns_table:
+                for node in turn_table.nodes:
+                    await node.set_value(False)
+                    
                 task = asyncio.create_task(turn_table.run(), name=turn_table.name)
                 tasks.append(task)
 
             for conveyor in conveyors:
+                for node in conveyor.nodes:
+                    await node.set_value(False)
+
                 task = asyncio.create_task(conveyor.run(), name=conveyor.name)
                 tasks.append(task)
 

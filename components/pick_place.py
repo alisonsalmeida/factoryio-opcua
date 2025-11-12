@@ -15,21 +15,27 @@ class PickPlace(BaseComponent):
         
         self.move_z = self.base_node.add_variable(idx, f'IO: MoveZ {self.name}', False, varianttype=ua.VariantType.Boolean)
         await self.move_z.set_writable(True)
+        self.nodes.append(self.move_z)
 
         self.move_x = self.base_node.add_variable(idx, f'IO: MoveX {self.name}', False, varianttype=ua.VariantType.Boolean)
         await self.move_x.set_writable(True)
+        self.nodes.append(self.move_x)
 
         self.move_x_clock = self.base_node.add_variable(idx, f'IO: MoveX Clock {self.name}', False, varianttype=ua.VariantType.Boolean)
-        await self.move_x_clock.set_writable(True)
+        await self.move_x_clock.set_writable(True) 
+        self.nodes.append(self.move_x_clock)
 
         self.move_x_anticlock = self.base_node.add_variable(idx, f'IO: MoveX AntiClock {self.name}', False, varianttype=ua.VariantType.Boolean)
         await self.move_x_anticlock.set_writable(True)
+        self.nodes.append(self.move_x_anticlock)
 
         self.move_c_clock = self.base_node.add_variable(idx, f'IO: MoveC Clock {self.name}', False, varianttype=ua.VariantType.Boolean)
         await self.move_c_clock.set_writable(True)
+        self.nodes.append(self.move_c_clock)
 
         self.move_c_anticlock = self.base_node.add_variable(idx, f'IO: MoveC AntiClock {self.name}', False, varianttype=ua.VariantType.Boolean)
         await self.move_c_anticlock.set_writable(True)
+        self.nodes.append(self.move_c_anticlock)
 
         # gera os sensores
         self.moving_z = self.base_node.add_variable(idx, f'IO: MovingZ {self.name}', False, varianttype=ua.VariantType.Boolean)

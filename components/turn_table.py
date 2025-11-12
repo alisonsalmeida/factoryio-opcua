@@ -3,12 +3,13 @@ from components.base import BaseComponent
 from components.box_producer import BoxType
 from asyncua import ua, Node
 from components.base import EdgeDetector, EdgeType, EventSensorHandle
+from components.order import Order
 
 import asyncio
 
 
 class TurnTable(BaseComponent):
-    def __init__(self, name, server, namespace_index, base_node, steps: dict, queue: asyncio.Queue[Tuple[BoxType, callable]]):
+    def __init__(self, name, server, namespace_index, base_node, steps: dict, queue: asyncio.Queue[Tuple[Order, callable]]):
         super().__init__(name, server, namespace_index, base_node)
 
         self.steps: dict = steps
@@ -19,12 +20,15 @@ class TurnTable(BaseComponent):
         # cria os movimentos
         self.node_move_turn = await self.base_node.add_variable(self.namespace_index, f'IO: Rotate {self.name}', False, varianttype=ua.VariantType.Boolean)
         await self.node_move_turn.set_writable(True)
+        self.nodes.append(self.node_move_turn)
 
         self.node_roll_plus = await self.base_node.add_variable(self.namespace_index, f'IO: Roll+ {self.name}', False, varianttype=ua.VariantType.Boolean)
         await self.node_roll_plus.set_writable(True)
+        self.nodes.append(self.node_roll_plus)
 
         self.node_roll_minus = await self.base_node.add_variable(self.namespace_index, f'IO: Roll- {self.name}', False, varianttype=ua.VariantType.Boolean)
         await self.node_roll_minus.set_writable(True)
+        self.nodes.append(self.node_roll_minus)
 
         # cria os sensores
         self.node_sensor_turn_zero = await self.base_node.add_variable(self.namespace_index, f'IO: Turn0 {self.name}', False, varianttype=ua.VariantType.Boolean)
@@ -55,8 +59,9 @@ class TurnTable(BaseComponent):
         await self.start_event.wait()
         
         while True:
-            box_type, move_prev_stage = await self.queue.get()
+            order, move_prev_stage = await self.queue.get()
             await asyncio.sleep(1)
+            box_type: BoxType = order.box_type
 
             if box_type == BoxType.BLUE:
                 # cria os triggers do sensor, para sinalizar que passou pelo turn table
@@ -83,7 +88,7 @@ class TurnTable(BaseComponent):
                 await self.pass_gree_box(box_type, move_prev_stage, [front_detector, back_detector, nineteen_detector, zero_detector])
                 handler.edge_detectors.clear()
 
-            elif box_type == BoxType.EMPTY:
+            elif box_type == BoxType.METAL:
                 front_detector = EdgeDetector(self.node_roll_front_limit.nodeid, ev_limit_front_sensor, EdgeType.RISING)
                 back_detector = EdgeDetector(self.node_roll_back_limit.nodeid, ev_limit_back_sensor, EdgeType.FALLING)
                 nineteen_detector = EdgeDetector(self.node_sensor_turn_nineteen.nodeid, ev_turn_90_sensor, EdgeType.RISING)

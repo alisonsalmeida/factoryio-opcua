@@ -13,12 +13,15 @@ class ArmComponent(BaseComponent):
         idx = self.namespace_index
         self.move = await self.base_node.add_variable(idx, f'IO:Move {self.name}', False, varianttype=ua.VariantType.Boolean)
         self.move.set_writable(True)
+        self.nodes.append(self.move)
 
         self.move_front = await self.base_node.add_variable(idx, f'IO:Move Front {self.name}', False, varianttype=ua.VariantType.Boolean)
         await self.move_front.set_writable(True)
+        self.nodes.append(self.move_front)
 
-        self.move_front = await self.base_node.add_variable(idx, f'IO:Move Back {self.name}', False, varianttype=ua.VariantType.Boolean)
-        await self.move_front.set_writable(True)
+        self.move_back = await self.base_node.add_variable(idx, f'IO:Move Back {self.name}', False, varianttype=ua.VariantType.Boolean)
+        await self.move_back.set_writable(True)
+        self.nodes.append(self.move_back)
 
     async def run(self):
         await self.start_event.wait()
