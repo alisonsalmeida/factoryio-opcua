@@ -1,9 +1,16 @@
+from typing import List, Union
 from abc import abstractmethod, ABC
 from asyncua import Node, Server
 from asyncua.ua import NodeId
 from enum import Enum, auto
 
 import asyncio
+
+
+class BoxType(Enum):
+    GREEN = auto()
+    BLUE = auto()
+    METAL = auto()
 
 
 class BaseComponent:
@@ -23,10 +30,10 @@ class BaseComponent:
     async def build(self):
         raise NotImplementedError
     
-    async def move_to_next(self):
+    async def move_to_next(self, value: bool):
         pass
 
-    async def move_to_prev(self):
+    async def move_to_prev(self, value: bool):
         pass
 
 
@@ -85,9 +92,16 @@ class EdgeDetector:
     def set_enable(self, value):
         self.enable = value
 
+    def clear(self):
+        self.event_trigger.clear()
+
+    async def wait(self):
+        await self.event_trigger.wait()
+        self.event_trigger.clear()
+
 
 class EventSensorHandle:
-    def __init__(self, server: Server, edge_detectors: list[EdgeDetector]):
+    def __init__(self, server: Server, edge_detectors: List[EdgeDetector]):
         self.server = server
         self.edge_detectors = edge_detectors
 
@@ -102,5 +116,11 @@ class EventSensorHandle:
     async def event_notification(self, event):
         pass
 
-    async def add_detect(self, edge_detector: EdgeDetector):
-        self.edge_detectors.append(edge_detector)
+    def add_detect(self, edges_detector: Union[EdgeDetector, List[EdgeDetector]]):
+        if not isinstance(edges_detector, (list, tuple)):
+            edges_detector = [edges_detector]
+        
+        self.edge_detectors.extend(edges_detector)
+
+    def clear(self):
+        self.edge_detectors.clear()

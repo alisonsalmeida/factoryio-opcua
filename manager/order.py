@@ -1,7 +1,7 @@
 from typing import Tuple
 from asyncua import uamethod, ua
 from components.base import BoxType
-from components.order import Order
+from components.order import Order, CoverType
 
 import asyncio
 
@@ -18,10 +18,14 @@ class ProcessOrder:
 		self.order_id = 1
 		
 	async def handle_new_order(
-		self, parent,  box_type: BoxType, quantity: int,  is_storage: bool) -> Tuple[ua.Variant, ua.Variant]:
+		self, parent,  box_type: BoxType, quantity: int, cover: bool, delivery: bool) -> Tuple[ua.Variant, ua.Variant]:
 		
 		# Cria o pedido
-		order: Order = Order(self.order_id, box_type, quantity, is_storage)
+		box_type = BoxType(box_type)
+		cover_type = CoverType.WITH_COVER if cover else CoverType.NO_COVER
+		order: Order = Order(self.order_id, box_type, quantity, cover_type, delivery)
+		self.order_id += 1
+
 		# Coloca o pedido na fila para o worker processar
 		if box_type == BoxType.GREEN:
 			await self.order_queue_green.put(order)
@@ -30,9 +34,9 @@ class ProcessOrder:
 		elif box_type == BoxType.METAL:
 			await self.order_queue_metal.put(order)
 
-		print(f"[Método] Pedido recebido e enfileirado: {order}")
+		print(f"[Method] Order received and enqueue: {order}")
 
 		return (
 			ua.Variant(True, ua.VariantType.Boolean), 
-			ua.Variant(f"Pedido para {quantity}x Tipo {box_type} recebido.", ua.VariantType.String)
+			ua.Variant(f"Order received for {quantity}x type {box_type.name} received.", ua.VariantType.String)
 		)

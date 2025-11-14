@@ -1,5 +1,5 @@
-from components.base import BaseComponent, EdgeDetector, EdgeType, EventSensorHandle
-from components.order import Order
+from components.base import BaseComponent, EdgeDetector, EdgeType, EventSensorHandle, BoxType
+from components.order import Order, OrderFn, OrderState
 from asyncua import Node, Server, ua
 from typing import List, Optional, Tuple
 from enum import Enum, auto
@@ -7,14 +7,8 @@ from enum import Enum, auto
 import asyncio
 
 
-class BoxType(Enum):
-    GREEN = auto()
-    BLUE = auto()
-    METAL = auto()
-
-
 class BoxFeeder(BaseComponent):
-    def __init__(self, order_producer_queue: asyncio.Queue[Order], box_type: BoxType, server: Server, namespace_index: int, base_node: Node, num_emitters: int, num_conveyors: int, queue: asyncio.Queue[Tuple[Order, callable]]):
+    def __init__(self, order_producer_queue: asyncio.Queue[Order], box_type: BoxType, server: Server, namespace_index: int, base_node: Node, num_emitters: int, num_conveyors: int, queue: asyncio.Queue[OrderFn]):
         super().__init__(box_type.name, server, namespace_index, base_node)
 
         # enfileira caixas para o segundo estagio, passando o tipo e um metodo para avançar a ultima esteira
@@ -70,6 +64,8 @@ class BoxFeeder(BaseComponent):
         while True:
             # ja começa ligando a upper e down, desliga o evento do sensor de start
             order = await self.order_producer_queue.get()
+            order.state = OrderState.PRODUCTION
+            
             print(f'Received production order: {order}')
 
             for _ in range(order.quantity):
@@ -127,7 +123,7 @@ class BoxFeeder(BaseComponent):
                 # configura o evento do sensor de stop, para ser de borda de descida
                 # e depois continua o ciclo novamente
                 # manda uma caixa para a fila do turntable
-                await self.queue.put((self.box_type, self.move_to_next))
+                await self.queue.put((order, self.move_to_next))
 
                 # # espera o turn table puxar
                 edge_detectors[1].set_trigger(EdgeType.FALLING)
@@ -162,5 +158,4 @@ class BoxFeeder(BaseComponent):
 
     async def move_to_next(self, value: bool):
         # liga ou desliga a ultima esteira desse estagio, permite que o turntable mova para frente
-        print(f'---> CALL FROM TURN TABLE: {self.box_type}, {value}, {type(self)}')
         await self.conveyors[self.num_conveyors - 1].set_value(value)
