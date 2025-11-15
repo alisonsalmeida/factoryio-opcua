@@ -27,7 +27,7 @@ class TurnPosition(Enum):
     NINETY = auto()   # Posição 90 graus
 
 
-class TurnTable(BaseComponent):
+class BaseTurnTable(BaseComponent):
     def __init__(self, 
                  name, server, namespace_index, base_node,
                  capabilities: Set[Capabilities],
@@ -43,6 +43,11 @@ class TurnTable(BaseComponent):
         self.queue_output = queue_output
         self.sem_output = sem_output
         self.sensors: List[Node] = []
+
+        self.ev_turn_0_sensor = asyncio.Event()
+        self.ev_turn_90_sensor = asyncio.Event()
+        self.ev_limit_front_sensor = asyncio.Event()
+        self.ev_limit_back_sensor = asyncio.Event()
 
     async def build(self):
         # cria os movimentos
@@ -75,87 +80,14 @@ class TurnTable(BaseComponent):
         await self.node_roll_back_limit.set_writable(True)
         self.sensors.append(self.node_roll_back_limit)
 
-    async def run(self):
-        ev_turn_0_sensor = asyncio.Event()
-        ev_turn_90_sensor = asyncio.Event()
-        ev_limit_front_sensor = asyncio.Event()
-        ev_limit_back_sensor = asyncio.Event()
-
-        handler = EventSensorHandle(self.server, [])
-        sub = await self.server.create_subscription(10, handler)        
+    async def create_detectors(self):
+        self.handler = EventSensorHandle(self.server, [])
+        sub = await self.server.create_subscription(10, self.handler)        
         await sub.subscribe_data_change(self.sensors)
-        await self.start_event.wait()
-        
-        while True:
-            order, move_prev_stage = await self.queue_input.get()
-
-            await asyncio.sleep(1)
-            box_type: BoxType = order.box_type
-            capability = self._order_for_capability(order)
-
-            if Capabilities.PASS in self.capabilities:
-                if box_type == BoxType.BLUE:
-                    # cria os triggers do sensor, para sinalizar que passou pelo turn table
-                    front_detector = EdgeDetector(self.node_roll_front_limit.nodeid, ev_limit_front_sensor, EdgeType.FALLING)
-                    back_detector = EdgeDetector(self.node_roll_back_limit.nodeid, ev_limit_back_sensor, EdgeType.RISING)
-
-                    handler.add_detect(front_detector)
-                    handler.add_detect(back_detector)
-
-                    await self.pass_box_blue(order, move_prev_stage, [front_detector, back_detector])
-                    handler.clear() 
-
-                elif box_type == BoxType.GREEN:
-                    front_detector = EdgeDetector(self.node_roll_front_limit.nodeid, ev_limit_front_sensor, EdgeType.FALLING)
-                    back_detector = EdgeDetector(self.node_roll_back_limit.nodeid, ev_limit_back_sensor, EdgeType.RISING)
-                    nineteen_detector = EdgeDetector(self.node_sensor_turn_nineteen.nodeid, ev_turn_90_sensor, EdgeType.RISING)
-                    zero_detector = EdgeDetector(self.node_sensor_turn_zero.nodeid, ev_turn_0_sensor, EdgeType.RISING)
-
-                    handler.add_detect(front_detector)
-                    handler.add_detect(back_detector)
-                    handler.add_detect(nineteen_detector)
-                    handler.add_detect(zero_detector)
-
-                    await self.pass_green_box(order, move_prev_stage, [front_detector, back_detector, nineteen_detector, zero_detector])
-                    handler.clear()
-
-                elif box_type == BoxType.METAL:
-                    front_detector = EdgeDetector(self.node_roll_front_limit.nodeid, ev_limit_front_sensor, EdgeType.RISING)
-                    back_detector = EdgeDetector(self.node_roll_back_limit.nodeid, ev_limit_back_sensor, EdgeType.FALLING)
-                    nineteen_detector = EdgeDetector(self.node_sensor_turn_nineteen.nodeid, ev_turn_90_sensor, EdgeType.RISING)
-                    zero_detector = EdgeDetector(self.node_sensor_turn_zero.nodeid, ev_turn_0_sensor, EdgeType.RISING)
-
-                    handler.add_detect(front_detector)
-                    handler.add_detect(back_detector)
-                    handler.add_detect(nineteen_detector)
-                    handler.add_detect(zero_detector)
-
-                    await self.pass_metal_box(order, move_prev_stage, [front_detector, back_detector, nineteen_detector, zero_detector])
-                    handler.clear()
-            
-            else:
-                if capability in self.capabilities:
-                    if capability == Capabilities.DELIVERY_NO_COVER:
-                        back_detector = EdgeDetector(self.node_roll_back_limit.nodeid, ev_limit_back_sensor, EdgeType.RISING)
-                        handler.add_detect(back_detector)
-
-                        await self._no_cover_delivery(order, move_prev_stage, [back_detector])
-                        handler.clear()
-
-                    elif capability == Capabilities.STORAGE_NO_COVER:
-                        back_detector = EdgeDetector(self.node_roll_back_limit.nodeid, ev_limit_back_sensor, EdgeType.RISING)
-                        nineteen_detector = EdgeDetector(self.node_sensor_turn_nineteen.nodeid, ev_turn_90_sensor, EdgeType.RISING)
-                        zero_detector = EdgeDetector(self.node_sensor_turn_zero.nodeid, ev_turn_0_sensor, EdgeType.RISING)
-                        
-                        handler.add_detect([back_detector, nineteen_detector, zero_detector])
-                        await self._no_cover_storage(order, move_prev_stage, [back_detector, nineteen_detector, zero_detector])
-                        handler.clear()
-
-            await asyncio.sleep(1)
 
     async def pass_box_blue(self, order: Order, move_prev_stage: callable, detectors: List[EdgeDetector] = []):
         # Ativa a esteira roll - e move o estagio anterior
-        print(f'procesando caixa em turn table {self.name}: {order.box_type}')
+        print(f'[Turntable]: procesando caixa em turn table {self.name}: {order.box_type}')
         front_detector, back_detector = detectors
 
         await self.node_roll_minus.set_value(True)
@@ -182,10 +114,9 @@ class TurnTable(BaseComponent):
 
         await asyncio.sleep(0.3)
         await self.node_roll_minus.set_value(False)
-        print(f'finalizou em {self.name}: {order.box_type}')
 
     async def pass_green_box(self, order: Order, move_prev_stage: callable, detectors: List[EdgeDetector] = []):
-        print(f'procesando caixa em turn table {self.name}: {order.box_type}')
+        print(f'[TurnTable] procesando caixa em turn table {self.name}: {order.box_type}')
         front_detector, back_detector, nineteen_detector, zero_detector = detectors
 
         # rodar para 90 graus, esperar sensor, mover para roll-  esperar chegar no sensor limit-,
@@ -223,10 +154,9 @@ class TurnTable(BaseComponent):
         
         await asyncio.sleep(0.3)
         await self.node_roll_minus.set_value(False)
-        print(f'finalizou em {self.name}: {order.box_type}')
 
     async def pass_metal_box(self, order: Order, move_prev_stage: callable, detectors: List[EdgeDetector] = []):
-        print(f'procesando caixa em turn table {self.name}: {order.box_type}')
+        print(f'[TurnTable]: procesando caixa em turn table {self.name}: {order.box_type}')
         front_detector, back_detector, nineteen_detector, zero_detector = detectors
 
         # rodar para 90 graus, esperar sensor, mover para roll+  esperar chegar no sensor limit+,
@@ -266,7 +196,6 @@ class TurnTable(BaseComponent):
         
         await asyncio.sleep(0.3)
         await self.node_roll_minus.set_value(False)
-        print(f'finalizou em {self.name}: {order.box_type}')
 
     async def _set_rollers(self, direction: RollerDirection):
         """
@@ -314,7 +243,6 @@ class TurnTable(BaseComponent):
 
     async def _transfer_to_next_stage(self, order: Order):
         """Coloca a ordem na fila de saída para o próximo componente."""
-        print(f"  -> Enviando item {order.box_type} para a fila do próximo estágio.")
         await self.queue_output.put((order, self.move_to_next))
     
     def _order_for_capability(self, order: Order) -> Capabilities:
@@ -432,16 +360,18 @@ class TurnTable(BaseComponent):
         # await self._set_rollers(RollerDirection.STOP)
         # print(f'[FIM] Finalizou {order.box_type} em {self.name}')
     
+    async def _cover_storage(self, order: Order, move_prev_stage: MoveCallbackFn, detectors: List[EdgeDetector] = []):
+        await self._storage(order, move_prev_stage, detectors)
+    
     async def _no_cover_storage(self, order: Order, move_prev_stage: MoveCallbackFn, detectors: List[EdgeDetector] = []):
-        """
-            Movimenta para armazenar sem tampas
-        """
-        print(f'[Turn Table: {self.name}]: moving order: {order} to storage no with cover')
+        await self._storage(order, move_prev_stage, detectors)
+    
+    async def _storage(self, order: Order, move_prev_stage: MoveCallbackFn, detectors: List[EdgeDetector] = []):
+        print(f'[TurnTable: {self.name}]: moving order: {order} to storage')
         back_detector, nineteen_detector, zero_detector = detectors
 
         # puxa a caixa para frente e liga o estagio anterior ate o sensor de backlimit ser acionado na borda de subida
         # 2. Puxa a caixa (para FRENTE)
-        
         await self._set_rollers(RollerDirection.BACKWARD)
         await self._control_previous_stage(move_prev_stage, True)
         await self._wait_for_sensor(back_detector)
@@ -466,8 +396,8 @@ class TurnTable(BaseComponent):
         await asyncio.sleep(1)
         await self._rotate_to(TurnPosition.HOME, {'zero': zero_detector})
 
-    async def _no_cover_delivery(self, order: Order, move_prev_stage: MoveCallbackFn, detectors: List[EdgeDetector] = []):
-        print(f'[Turn Table: {self.name}]: moving order: {order} to delivery no with cover')
+    async def _delivery(self, order: Order, move_prev_stage: MoveCallbackFn, detectors: List[EdgeDetector] = []):
+        print(f'[TurnTable: {self.name}]: moving order: {order} to delivery')
         back_detector = detectors[0]
 
         await self._set_rollers(RollerDirection.BACKWARD)
@@ -481,3 +411,101 @@ class TurnTable(BaseComponent):
         await self._wait_for_sensor(back_detector)
         await asyncio.sleep(0.5)
         await self._set_rollers(RollerDirection.STOP)
+
+
+class TurnTable1(BaseTurnTable):
+    async def run(self):
+        await self.create_detectors()
+        await self.start_event.wait()
+
+        while True:
+            order, move_prev_stage = await self.queue_input.get()
+            await asyncio.sleep(1)
+
+            box_type: BoxType = order.box_type
+            print(f'[TurnTable1]: process order: {order}')
+
+            if box_type == BoxType.BLUE:
+                # cria os triggers do sensor, para sinalizar que passou pelo turn table
+                front_detector = EdgeDetector(self.node_roll_front_limit.nodeid, self.ev_limit_front_sensor, EdgeType.FALLING)
+                back_detector = EdgeDetector(self.node_roll_back_limit.nodeid, self.ev_limit_back_sensor, EdgeType.RISING)
+
+                self.handler.add_detect([front_detector, back_detector])
+                await self.pass_box_blue(order, move_prev_stage, [front_detector, back_detector])
+                self.handler.clear() 
+
+            elif box_type == BoxType.GREEN:
+                front_detector = EdgeDetector(self.node_roll_front_limit.nodeid, self.ev_limit_front_sensor, EdgeType.FALLING)
+                back_detector = EdgeDetector(self.node_roll_back_limit.nodeid, self.ev_limit_back_sensor, EdgeType.RISING)
+                nineteen_detector = EdgeDetector(self.node_sensor_turn_nineteen.nodeid, self.ev_turn_90_sensor, EdgeType.RISING)
+                zero_detector = EdgeDetector(self.node_sensor_turn_zero.nodeid, self.ev_turn_0_sensor, EdgeType.RISING)
+
+                self.handler.add_detect([front_detector, back_detector, nineteen_detector, zero_detector])
+                await self.pass_green_box(order, move_prev_stage, [front_detector, back_detector, nineteen_detector, zero_detector])
+                self.handler.clear()
+
+            elif box_type == BoxType.METAL:
+                front_detector = EdgeDetector(self.node_roll_front_limit.nodeid, self.ev_limit_front_sensor, EdgeType.RISING)
+                back_detector = EdgeDetector(self.node_roll_back_limit.nodeid, self.ev_limit_back_sensor, EdgeType.FALLING)
+                nineteen_detector = EdgeDetector(self.node_sensor_turn_nineteen.nodeid, self.ev_turn_90_sensor, EdgeType.RISING)
+                zero_detector = EdgeDetector(self.node_sensor_turn_zero.nodeid, self.ev_turn_0_sensor, EdgeType.RISING)
+
+                self.handler.add_detect([front_detector, back_detector, nineteen_detector, zero_detector])
+                await self.pass_metal_box(order, move_prev_stage, [front_detector, back_detector, nineteen_detector, zero_detector])
+                self.handler.clear()
+
+
+class TurnTable2(BaseTurnTable):
+    async def run(self):
+        await self.create_detectors()
+        await self.start_event.wait()
+
+        while True:
+            order, move_prev_stage = await self.queue_input.get()
+            await asyncio.sleep(1)
+
+            capability = self._order_for_capability(order)
+
+            if capability == Capabilities.DELIVERY_NO_COVER or capability == Capabilities.STORAGE_COVER:
+                back_detector = EdgeDetector(self.node_roll_back_limit.nodeid, self.ev_limit_back_sensor, EdgeType.RISING)
+                self.handler.add_detect(back_detector)
+
+                await self._delivery(order, move_prev_stage, [back_detector])
+                self.handler.clear()
+
+            elif capability == Capabilities.STORAGE_NO_COVER:
+                back_detector = EdgeDetector(self.node_roll_back_limit.nodeid, self.ev_limit_back_sensor, EdgeType.RISING)
+                nineteen_detector = EdgeDetector(self.node_sensor_turn_nineteen.nodeid, self.ev_turn_90_sensor, EdgeType.RISING)
+                zero_detector = EdgeDetector(self.node_sensor_turn_zero.nodeid, self.ev_turn_0_sensor, EdgeType.RISING)
+                
+                self.handler.add_detect([back_detector, nineteen_detector, zero_detector])
+                await self._storage(order, move_prev_stage, [back_detector, nineteen_detector, zero_detector])
+                self.handler.clear()
+
+
+class TurnTable3(BaseTurnTable):
+    async def run(self):
+        await self.create_detectors()
+        await self.start_event.wait()
+
+        while True:
+            order, move_prev_stage = await self.queue_input.get()
+            await asyncio.sleep(1)
+
+            capability = self._order_for_capability(order)
+
+            if capability == Capabilities.STORAGE_COVER:
+                back_detector = EdgeDetector(self.node_roll_back_limit.nodeid, self.ev_limit_back_sensor, EdgeType.RISING)
+                nineteen_detector = EdgeDetector(self.node_sensor_turn_nineteen.nodeid, self.ev_turn_90_sensor, EdgeType.RISING)
+                zero_detector = EdgeDetector(self.node_sensor_turn_zero.nodeid, self.ev_turn_0_sensor, EdgeType.RISING)
+                
+                self.handler.add_detect([back_detector, nineteen_detector, zero_detector])
+                await self._storage(order, move_prev_stage, [back_detector, nineteen_detector, zero_detector])
+                self.handler.clear()
+
+            if capability == Capabilities.DELIVERY_NO_COVER:
+                back_detector = EdgeDetector(self.node_roll_back_limit.nodeid, self.ev_limit_back_sensor, EdgeType.RISING)
+                self.handler.add_detect(back_detector)
+
+                await self._delivery(order, move_prev_stage, [back_detector])
+                self.handler.clear()

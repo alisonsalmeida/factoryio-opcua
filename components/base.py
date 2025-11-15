@@ -82,7 +82,7 @@ class EdgeDetector:
         # Verifica se deve acionar callback
         if edge:
             if self.trigger_on == EdgeType.BOTH or self.trigger_on == edge:
-                print(f'Trigger Event: {self.trigger_on} for node_id: {name}')
+                # print(f'Trigger Event: {self.trigger_on} for node_id: {name}')
                 self.event_trigger.set()
     
     def set_trigger(self, trigger_on: EdgeType):

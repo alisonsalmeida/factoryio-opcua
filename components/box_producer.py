@@ -58,15 +58,15 @@ class BoxFeeder(BaseComponent):
         await sub.subscribe_data_change([start_sensor, end_sensor])
         await self.start_event.wait()
 
-        print(f'Starting box producer: {self.box_type.name}')
+        print(f'[Feeder]: Starting box producer: {self.box_type.name}')
         is_full = False
         
         while True:
             # ja começa ligando a upper e down, desliga o evento do sensor de start
             order = await self.order_producer_queue.get()
             order.state = OrderState.PRODUCTION
-            
-            print(f'Received production order: {order}')
+
+            print(f'[Feeder]: Received production order: {order}')
 
             for _ in range(order.quantity):
 

@@ -66,6 +66,7 @@ class Handler(BaseComponent):
         await self.start_event.wait()
 
         asyncio.create_task(self.process_input_a())
+        asyncio.create_task(self.process_input_b())
         asyncio.create_task(self.task_monitor_moving())
         
     async def process_input_a(self):
@@ -82,30 +83,31 @@ class Handler(BaseComponent):
                     # move para posição inicial de A
                     task_idle_monitor.cancel()
                     await self._move_home_a()
-                    
-                    # move o handler esquerda, levanta o produto, volta ao centro e vai para o destino
-                    await self._move_handler_left()
-                    await self._move_raise()
-                    await self._move_handler_center()
-                    await self._move_position(self._position)
-                    self._position += 1
-
-                    # chegou na posição, baixa o eelvador e retrai o handler e volta para a posição de idle
-                    await self._move_handler_right()
-                    await self._move_down()
-                    await self._move_handler_center()
-                    # await self._move_position(self.idle_position)
-
+                    await self._raise_product()
+                    await self._move_product()
+                    await self._release_product()
+                    await self._move_home_a()
                     # aguarda para pegar o proximo item
-                    await asyncio.sleep(2)
+                
+                await asyncio.sleep(0.5)
     
     async def process_input_b(self):
         while True:
-            async with self.lock_processor:
-                async with self.sem_input_b:
-                    order, _ = await self.queue_input_b.get()
-                    print(f'[Handler]: get new order from input b to storage: {order}')
-                    await asyncio.sleep(5)
+            async with self.sem_input_b:
+                task_idle_monitor = asyncio.create_task(self.monitor_idle())
+                order, _ = await self.queue_input_b.get()
+                print(f'[Handler]: get new order from input b to storage: {order}')
+                
+                async with self.lock_processor:
+                    task_idle_monitor.cancel()
+                    await self._move_home_b()
+                    await self._raise_product()
+                    await self._move_product()
+                    await self._release_product()
+                    await self._move_home_b()
+                    # aguarda para pegar o proximo item
+                
+                await asyncio.sleep(0.5)
 
     async def task_monitor_moving(self):
         while True:
@@ -115,14 +117,14 @@ class Handler(BaseComponent):
             moving = mov_x or mov_z
             if moving and not self._is_moving:
                 # Transição: PARADO -> MOVENDO
-                print("Transição detectada: Parado -> Movendo")
+                print("[Handler]: Transição detectada: Parado -> Movendo")
                 self._is_moving = True
                 self._stopped_moving.clear()
                 self._started_moving.set()
 
             elif not moving and self._is_moving:
                 # Transição: MOVENDO -> PARADO
-                print("Transição detectada: Movendo -> Parado")
+                print("[Handler]: Transição detectada: Movendo -> Parado")
                 self._is_moving = False
                 self._started_moving.clear()
                 self._stopped_moving.set()
@@ -181,11 +183,26 @@ class Handler(BaseComponent):
         self.nodes.append(self.position)
 
     async def _move_home_a(self):
-        # move o handler para a posição 8, espera o sensor dizer que chegou
-        # await self.position.set_data_value(value=8, varianttype=VariantType.Int16)
-        # await self.edge_moving_x.wait()
-        # await asyncio.sleep(0.5)
         await self._move_position(8)
+
+    async def _move_home_b(self):
+        await self._move_position(1)
+
+    async def _raise_product(self):
+        # move o handler esquerda, levanta o produto, volta ao centro e vai para o destino
+        await self._move_handler_left()
+        await self._move_raise()
+        await self._move_handler_center()
+
+    async def _move_product(self):
+        await self._move_position(self._position)
+        self._position += 1
+
+    async def _release_product(self):
+        # chegou na posição, baixa o elevador, retrai o handler e volta para a posicao
+        await self._move_handler_right()
+        await self._move_down()
+        await self._move_handler_center()
 
     async def _move_position(self, position: int):
         self._started_moving.clear()
@@ -194,21 +211,14 @@ class Handler(BaseComponent):
         await self.position.set_data_value(value=position, varianttype=VariantType.Int16)
 
         try:
-            print("Comando enviado. Aguardando início do movimento...")
-            
-            # Espera até 3.0 segundos para o movimento começar
             await asyncio.wait_for(self._started_moving.wait(), timeout=3.0)
-
-            print("Movimento detectado! Aguardando parada...")
+            print("[Handler]: Movimento detectado! Aguardando parada...")
             
-            # Agora, espera o sinal de "parou" (sem timeout)
             await self._stopped_moving.wait()
-            print(f"Movimento concluído. Elevador chegou na Posição {position}.")
+            print(f"[Handler]: Movimento concluído. Elevador chegou na Posição {position}.")
 
         except asyncio.exceptions.TimeoutError:
-            print(f"Movimento não detectado para P{position}. "
-                             "Assumindo que já estava no local.")
-            
+            print(f"[Handler]: Movimento não detectado para P{position}. Assumindo que já estava no local.")
             self._stopped_moving.set()
 
         finally:

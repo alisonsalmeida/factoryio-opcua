@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, TypeAlias, Callable
 from pathlib import Path
 from asyncua import Server, ua, uamethod
 from asyncua.server.user_managers import CertificateUserManager
@@ -7,55 +7,64 @@ from asyncua.crypto.validator import CertificateValidator, CertificateValidatorO
 from cryptography.x509.oid import ExtendedKeyUsageOID
 from components.base import BaseComponent
 from components.box_producer import BoxFeeder, BoxType
-from components.turn_table import TurnTable, Capabilities
+from components.turn_table import BaseTurnTable, TurnTable1, TurnTable2, TurnTable3, Capabilities
 from components.conveyor import Conveyor, ConveyorDirection, ConveyorAccess
 from components.handler import Handler
-from components.order import Order, OrderFn
+from components.order import Order, OrderFn, CoverType
 from manager.order import ProcessOrder
 
 import asyncio
 import socket
 
 
+RoutingStrategy: TypeAlias = Callable[[Order], bool]
+
+
 class QueueRouter:
     """
-        Essa classe serve para routear as ordens dos turn tables que tem mais de 1 saida
+        Roteia ordens para a fila de 'delivery' ou 'storage'
+        com base em uma estratégia de lógica injetada.
     """
-
     def __init__(self,
-        queue_storage: asyncio.Queue[Order],
-        queue_delivery: asyncio.Queue[OrderFn],
-        sem_storage: asyncio.Semaphore,
-        sem_delivery: asyncio.Semaphore
+                 queue_storage: asyncio.Queue[OrderFn], 
+                 queue_delivery: asyncio.Queue[OrderFn],
+                 sem_storage: asyncio.Semaphore,
+                 sem_delivery: asyncio.Semaphore,
+                 routing_strategy: RoutingStrategy 
     ):
         
         self.queue_storage = queue_storage
         self.queue_delivery = queue_delivery
         self.sem_storage = sem_storage
         self.sem_delivery = sem_delivery
+        self.routing_strategy = routing_strategy
 
     async def put(self, item: OrderFn):
         order, fn = item
 
-        if order.delivery:
+        if self.routing_strategy(order):
+            print(f'[QueueRouter]: router order: {order} to queue delivery: {self.queue_delivery}')
             async with self.sem_delivery:
                 await self.queue_delivery.put((order, fn))
         
         else:
+            print(f'[QueueRouter]: router order: {order} to queue storage: {self.queue_storage}')
             async with self.sem_storage:
                 await self.queue_storage.put((order, fn))
 
 
-async def task_simulate_consumer(queue):
-    print('---> START QUEUE SIMULATE')
-
+async def task_delivery_exit(queue: asyncio.Queue[OrderFn]):
     while True:
-        order, move_prev_fn = await queue.get()
-        await move_prev_fn(True)
-        await asyncio.sleep(3)
-        await move_prev_fn(False)
-
+        order, _ = await queue.get()
         await asyncio.sleep(5)
+
+
+def default_router(order: Order) -> bool:
+    return order.delivery or order.cover == CoverType.WITH_COVER
+
+
+def simple_delivery(order: Order) -> bool:
+    return order.delivery
 
 
 async def main():
@@ -81,17 +90,28 @@ async def main():
     queue_conveyor1_turntable2: asyncio.Queue[OrderFn] = asyncio.Queue(maxsize=1)     # conveyor_input -> turntable_nocover
     queue_turntable2_storage: asyncio.Queue[OrderFn] = asyncio.Queue(maxsize=1)       # turntable2 -> roller_a_storage
     queue_turntable2_delivery: asyncio.Queue[OrderFn] = asyncio.Queue(maxsize=1)      # turntable2 -> conveyor_delivery
-    sem_conveyor_storage = asyncio.Semaphore(value=2)
-    sem_conveyor_delivery = asyncio.Semaphore(value=2)
-    queue_turntable2_router = QueueRouter(queue_turntable2_storage, queue_turntable2_delivery, sem_conveyor_storage, sem_conveyor_delivery)
+    sem_conveyor_a_storage = asyncio.Semaphore(value=2)
+    sem_conveyor_a_delivery = asyncio.Semaphore(value=2)
+    queue_turntable2_router = QueueRouter(
+        queue_turntable2_storage, queue_turntable2_delivery, sem_conveyor_a_storage, sem_conveyor_a_delivery, default_router)
 
     queue_roller_a_acc_a: asyncio.Queue[OrderFn] = asyncio.Queue(maxsize=1)           # roller_a_storage -> roller_access_a
-    queue_roller_b_acc_b: asyncio.Queue[OrderFn] = asyncio.Queue(maxsize=1)           # roller_b_storage -> roller_access_b
     queue_acc_a_handler: asyncio.Queue[OrderFn] = asyncio.Queue(maxsize=1)            # roller_access_a -> handler
     sem_acc_a_handler = asyncio.Semaphore(2)  
-    queue_acc_b_handler: asyncio.Queue[OrderFn] = asyncio.Queue(maxsize=1)            # roller_access_b -> handler
+    
+    queue_dispatch_turntable3: asyncio.Queue[OrderFn] = asyncio.Queue(maxsize=1)      # conveyor_delivery -> turntable3
+    queue_turntable3_storage: asyncio.Queue[OrderFn] = asyncio.Queue(maxsize=1)       # turntable3 -> roller_b_storage
+    queue_turntable3_delivery: asyncio.Queue[OrderFn] = asyncio.Queue(maxsize=1)      # turntable3 -> delivery_conveyor
+    sem_converyor_b_storage = asyncio.Semaphore(2)
+    sem_converyor_b_delivery = asyncio.Semaphore(2)
+    queue_turntable3_router = QueueRouter(
+        queue_turntable3_storage, queue_turntable3_delivery, sem_converyor_b_storage, sem_converyor_b_delivery, simple_delivery)  
 
-    queue_simulate2 = asyncio.Queue()
+    queue_roller_b_acc_b: asyncio.Queue[OrderFn] = asyncio.Queue(maxsize=1)           # roller_b_storage -> roller_access_b
+    queue_acc_b_handler: asyncio.Queue[OrderFn] = asyncio.Queue(maxsize=1)            # roller_access_b -> handler
+    sem_acc_b_handler = asyncio.Semaphore(2) 
+
+    queue_delivery_exit: asyncio.Queue[OrderFn] = asyncio.Queue(maxsize=1)            # representa a fila de entrega final
 
     server = Server()
     process_order = ProcessOrder(queue_oder_green, queue_oder_blue, queue_oder_metal)
@@ -149,9 +169,9 @@ async def main():
         tasks.append(task)
 
     turns_table: List[BaseComponent] = [
-        TurnTable('Select', server, idx, node_turns_table, {Capabilities.PASS}, queue_producer_turntable, queue_turntable1_conveyor1, sem_turntable1_conveyor1),
-        TurnTable('NoCover', server, idx, node_turns_table, {Capabilities.DELIVERY_NO_COVER, Capabilities.STORAGE_NO_COVER}, queue_conveyor1_turntable2, queue_turntable2_router, asyncio.Semaphore()),
-        TurnTable('WithCover', server, idx, node_turns_table, {}, asyncio.Queue(), asyncio.Queue(), asyncio.Semaphore())
+        TurnTable1('Select', server, idx, node_turns_table, {Capabilities.PASS}, queue_producer_turntable, queue_turntable1_conveyor1, sem_turntable1_conveyor1),
+        TurnTable2('NoCover', server, idx, node_turns_table, {Capabilities.DELIVERY_NO_COVER, Capabilities.STORAGE_NO_COVER}, queue_conveyor1_turntable2, queue_turntable2_router, asyncio.Semaphore()),
+        TurnTable3('WithCover', server, idx, node_turns_table, {Capabilities.DELIVERY_NO_COVER, Capabilities.STORAGE_COVER}, queue_dispatch_turntable3, queue_turntable3_router, asyncio.Semaphore())
     ]
 
     for _, turn_table in enumerate(turns_table):
@@ -166,12 +186,12 @@ async def main():
     args_conveyors = [server, idx, node_input_conveyors]
     conveyors: List[BaseComponent] = [
         Conveyor('InputConveyor', *args_conveyors, 2, 2, {ConveyorDirection.FORWARD}, queue_turntable1_conveyor1, queue_conveyor1_turntable2, sem_turntable1_conveyor1),
-        Conveyor('RollerAConveyor', *args_conveyors, 1, 4, {ConveyorDirection.FORWARD, ConveyorDirection.BACKWARD}, queue_turntable2_storage, queue_roller_a_acc_a, sem_conveyor_storage),
+        Conveyor('RollerAConveyor', *args_conveyors, 1, 4, {ConveyorDirection.FORWARD, ConveyorDirection.BACKWARD}, queue_turntable2_storage, queue_roller_a_acc_a, sem_conveyor_a_storage),
         ConveyorAccess('AccAConveyor', *args_conveyors, 1, 1, {ConveyorDirection.FORWARD, ConveyorDirection.BACKWARD}, queue_roller_a_acc_a, queue_acc_a_handler, sem_acc_a_handler),
-        Conveyor('DispaConveyor', *args_conveyors, 1, 4, {ConveyorDirection.FORWARD}, queue_turntable2_delivery, queue_simulate2, sem_conveyor_delivery),
-        Conveyor('RollerBConveyor', *args_conveyors, 1, 4, {ConveyorDirection.FORWARD, ConveyorDirection.BACKWARD}, asyncio.Queue(), asyncio.Queue(), asyncio.Semaphore()),
-        ConveyorAccess('AccBConveyor', *args_conveyors, 1, 1, {ConveyorDirection.FORWARD, ConveyorDirection.BACKWARD},  asyncio.Queue(), asyncio.Queue(), asyncio.Semaphore()),
-        Conveyor('ExitConveyor', *args_conveyors, 1, 1, {ConveyorDirection.FORWARD}, asyncio.Queue(), asyncio.Queue(), asyncio.Semaphore())
+        Conveyor('DispaConveyor', *args_conveyors, 1, 4, {ConveyorDirection.FORWARD}, queue_turntable2_delivery, queue_dispatch_turntable3, sem_conveyor_a_delivery),
+        Conveyor('RollerBConveyor', *args_conveyors, 1, 4, {ConveyorDirection.FORWARD, ConveyorDirection.BACKWARD}, queue_turntable3_storage, queue_roller_b_acc_b, sem_converyor_b_storage),
+        ConveyorAccess('AccBConveyor', *args_conveyors, 1, 1, {ConveyorDirection.FORWARD, ConveyorDirection.BACKWARD},  queue_roller_b_acc_b,queue_acc_b_handler, sem_acc_b_handler),
+        ConveyorAccess('ExitConveyor', *args_conveyors, 1, 1, {ConveyorDirection.FORWARD}, queue_turntable3_delivery, queue_delivery_exit, asyncio.Semaphore(), wait_next_stage=False)
     ]
     
     for conveyor in conveyors:
@@ -182,7 +202,7 @@ async def main():
         task = asyncio.create_task(conveyor.run(), name=conveyor.name)
         tasks.append(task)
 
-    handler = Handler('Handler', server, idx, node_handler, queue_acc_a_handler, queue_acc_b_handler, sem_acc_a_handler, asyncio.Semaphore())
+    handler = Handler('Handler', server, idx, node_handler, queue_acc_a_handler, queue_acc_b_handler, sem_acc_a_handler, sem_acc_b_handler)
     await handler.build()
 
     task = asyncio.create_task(handler.run(), name=handler.name)
@@ -209,9 +229,7 @@ async def main():
     await node_methods.add_method(idx, 'CreateOrder', uamethod(process_order.handle_new_order), input_args, output_args)
 
     await server.start()
-    # asyncio.create_task(task_simulate_consumer(queue_simulate))
-    asyncio.create_task(task_simulate_consumer(queue_simulate2))
-
+    asyncio.create_task(task_delivery_exit(queue_delivery_exit))
     print('server start')
     
     # melhorar esse pedaço

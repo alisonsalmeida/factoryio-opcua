@@ -20,7 +20,8 @@ class Conveyor(BaseComponent):
             directions: Set[ConveyorDirection],
             queue_input: asyncio.Queue[OrderFn],
             queue_output: asyncio.Queue[OrderFn],
-            sem_input: asyncio.Semaphore
+            sem_input: asyncio.Semaphore,
+            wait_next_stage: bool = True
         ):
         
         super().__init__(name, server, namespace_index, base_node)
@@ -34,6 +35,8 @@ class Conveyor(BaseComponent):
         self.queue_input = queue_input
         self.queue_output = queue_output
         self.sem_input = sem_input
+        self.wait_next_stage = wait_next_stage
+
         self.items = 0
         self.lock_engines = asyncio.Lock()
 
@@ -143,11 +146,7 @@ class Conveyor(BaseComponent):
             await engine.set_value(state)
 
     async def move_to_next(self, value):
-        print('CALL from next stage ---> ')
         async with self.lock_engines:
-            # if len(self.directions) > 1:
-            #     return
-
             await self.engines[self.num_engines - 1].set_value(value)
 
 
@@ -185,7 +184,8 @@ class ConveyorAccess(Conveyor):
             
             # espera o handler puxar
             # await end_edge_detector.set_trigger(EdgeType.RISING)
-            await end_edge_detector.wait()
+            if self.wait_next_stage:
+                await end_edge_detector.wait()
 
             # await end_edge_detector.set_trigger(EdgeType.FALLING)
             await asyncio.sleep(1)
